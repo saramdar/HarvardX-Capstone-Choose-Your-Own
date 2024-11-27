@@ -1,0 +1,547 @@
+---
+title: '**Choose Your Own Capstone - Predicting Failure in Education**'
+subtitle: 'HarvardX PH125.9x Data Science: Capstone'
+author: "_Sara Darland_"
+date: "_November 22, 2024_"
+output: pdf_document
+toc: true
+number_sections: true
+urlcolor: blue
+df_print: kable
+fontsize: 10pt
+fig_caption: yes
+keep_tex: yes
+header-includes: \usepackage{float}
+includes:
+  in_header: my_header.tex
+---
+
+```{r setup, include=FALSE}
+# rmarkdown global options
+knitr::opts_chunk$set(eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, fig.align = "center", out.width = "70%", fig.pos = "H", out.extra = "")
+options(tinytex.verbose = TRUE)
+
+# libraries and output options
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(dslabs)) install.packages("dslabs", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(gridExtra)) install.packages("gridExtra", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(dslabs)
+library(knitr)
+library(gridExtra)
+library(caret)
+library(randomForest)
+
+# set options
+options(timeout = 120, digits = 3, scipen = 999)
+```
+\newpage
+# Introduction
+Big data in education is a growing field, as seen by the "Big Data and Education" class offering on the EdX platform (Baker, 2023.) Teachers can use data to identify which students struggle and and create personalized education plans to enhance their learning. Administrators and legislators can use data to identify predictors of failure or success and create initiatives or policy to broadly improve student outcomes. Inspired by my personal experience in the classroom in the Tigard-Tualatin School District and my desire to improve educational outcomes, the goal of this project is to determine the machine learning technique that most accurately identifies students experiencing educational failure. When accurately identified, failing students can receive early intervention in an effort to improve their education outcome. This project explores a variety of regression and classification models and identifies the best model through evaluation of Root Mean Squared Error (RMSE) or Accuracy when the model is run on previously unseen data. 
+This project is required coursework for the HarvardX PH125.9x Data Science: Capstone course.
+
+## Dataset
+This project uses the [Student Performance Factors dataset](https://www.kaggle.com/datasets/lainguyn123/student-performance-factors/data) from the Kaggle website posted by user lainguyn123, who maintains the Kaggle user site "Practice Data Analysis With Me". The dataset is synthetic; it was generated for educational purposes and not sourced from real world institutions (lainguyn123). The dataset consists of student's exam scores and various factors that may affect student performance.
+```{r dataset-import-1, results='hide'}
+# import dataset from my github site, OG dataset: https://www.kaggle.com/datasets/lainguyn123/student-performance-factors
+data <- read.csv("https://raw.githubusercontent.com/saramdar/HarvardX-Capstone-Choose-Your-Own/refs/heads/main/student_data.csv", sep = ",")
+
+str(data) #initial view
+```
+The raw dataset is imported from Github after previously being downloaded from Kaggle. The dataset is checked for blanks, which are replaced with NAs.  There are `r sum(is.na(data))` NAs present across `r sum(!complete.cases(data))` rows. The NAs occur in the following variables: `r colnames(data)[colSums(is.na(data))>0][1]`, `r colnames(data)[colSums(is.na(data))>0][2]`, `r colnames(data)[colSums(is.na(data))>0][3]`. These variables are removed in order to keep as many observations in the dataset as possible. The initial view of the dataset shows there are many character variables. These variables are converted to factors in the data cleaning process. Additionally, the levels for each factor are reordered for consistency and to make intuitive sense (low = 1, medium = 2, high = 3). Finally, the variable "Pass" is added - this represents whether a student receives a passing or failing grade and is based on "Exam_Score". 
+```{r dataset-import-2, echo=TRUE, results='hide'}
+###########################
+# Data cleaning
+###########################
+data <- replace(data, data == '', NA) # replace blanks with NA
+any(is.na(data)) # check for NAs
+sum(is.na(data)) # count NAs
+sum(!complete.cases(data)) # count rows with NAs
+colnames(data)[colSums(is.na(data))>0] #identify columns containing NAs
+
+# preprocessing character data into factors, reordering levels (low = 1, high = 3)
+data_clean <- data %>%
+  mutate(Parental_Involvement = factor(Parental_Involvement, levels=c("Low", "Medium","High")),
+         Access_to_Resources = factor(Access_to_Resources, levels=c("Low", "Medium","High")),
+         Extracurricular_Activities = factor(Extracurricular_Activities),
+         Motivation_Level = factor(Motivation_Level, levels=c("Low", "Medium","High")),
+         Internet_Access = factor(Internet_Access),
+         Family_Income = factor(Family_Income, levels=c("Low", "Medium","High")),
+         School_Type = factor(School_Type),
+         Peer_Influence = factor(Peer_Influence),
+         Learning_Disabilities = factor(Learning_Disabilities),
+         Gender = factor(Gender)) %>%
+  select(-one_of(c("Teacher_Quality", 
+                   "Parental_Education_Level", 
+                   "Distance_from_Home")))%>% # exclude predictors with NAs
+  mutate(Pass = case_when( # add "Pass" outcome
+    Exam_Score >= 65 ~"1",
+    Exam_Score < 65 ~ "0"))%>%
+  mutate(Pass = factor(Pass))
+
+```
+```{r dataset-import-3, results='hide'}
+# view final data set
+head(data_clean)
+dim(data_clean)
+str(data_clean)
+```
+
+The clean dataset consists of `r nrow(data_clean)` rows or observations, with the following `r ncol(data_clean)` columns (lainguyn123):
+
+* Hours_studied -- number of hours student studied per week. It is an integer. 
+* Attendance -- percentage of classes student attended. It is an integer. 
+* Parental_Involvement -- level of parental involvement in student's education. It is a factor.
+* Access_to_Resources -- student's availability of educational resources. It is a factor.
+* Extracurricular_Activities -- student's participation in extracurriculars. It is a factor. 
+* Sleep_Hours -- student's average number of hours of sleep per night. It is an integer.
+* Previous_Scores -- student's previous exam scores. It is an integer.
+* Motivation_Level -- student's level of motivation. It is a factor.
+* Internet_Access -- availability of internet to a student. It is a factor.
+* Tutoring_Sessions -- number of tutoring sessions a student attends per month. It is an integer.
+* Family_Income -- student's family income level. It is a factor.
+* School_Type -- type of school student's attends. It is a factor.
+* Peer_Influence -- influence of student's peers. It is a factor.
+* Physical_Activity -- student's average number of physically activity hours per week. It is an integer. 
+* Learning_Disabilities -- presence of a learning disability. It is a factor.
+* Gender -- student's gender. It is a factor.
+* Exam_Score -- student's final exam score. It is an integer. 
+* Pass -- pass/fail based on Exam_Score. It is a factor.
+
+# Data Exploration
+The clean dataset is observed, it is in tidy format and each row corresponds to a unique student. For the sake of space only the first 5 rows and columns are shown below:
+```{r data-explore-1}
+head(data_clean, n=c(5,5)) %>% kable(caption="First 5 rows and columns of clean dataset")
+```
+
+## Outcomes
+The variables that measure student performance are "Exam_Score" and "Pass". These variables are the outcomes that will be predicted; "Exam_Score" is a continuous integer and will be predicted using regression models and "Pass" is a categorical factor and will be predicted using classification models. Student's exam scores range from a minimum of `r min(data_clean$Exam_Score)` to a maximum of `r max(data_clean$Exam_Score)` with a mean of `r mean(data_clean$Exam_Score)`. The higher the score the better a student performed. The distribution of exam scores is not normal - it has a long tail on the right side with more students receiving very high scores than very low scores. Model development assumes a normal distribution which may result in poor model performance when predicting high scores as there is little data to use when training. However the project goal is to accurately predicting low scores so this is not a major concern.  
+
+```{r data-explore-2, fig.cap="Exam Score distribution"}
+data_clean %>%
+  ggplot(aes(Exam_Score)) +
+  geom_histogram(bins = 50, color = "black")
+```
+The variable "Pass" represents whether a student passed or failed the exam; an exam score of 65 or greater indicates a student passed (Pass = 1) while an exam score of less than 65 indicates the student failed (Pass =0). 
+```{r data-explore-3, fig.cap="Pass distribution"}
+data_clean %>% count(Pass) %>% ggplot(aes(x=Pass, y=n)) + geom_col() + ylab("count") #distribution of Pass
+```
+The table below shows the proportion of students in the dataset that pass and fail. 
+```{r data-explore-4}
+data_clean %>% count(Pass) %>% 
+  reframe(Pass=Pass, proportion = n/nrow(data_clean)) %>% kable(caption="Proportion of Pass/Fail")
+```
+
+## Predictors
+The 16 other variables are features used to predict the outcome measuring student success. These features can be split into three groups: student behavior and attitude, home environment, and school environment (lainguyn123). 
+```{r data-explore-5, include=FALSE}
+#Explore Predictors
+#about the student:
+#Hours Studied
+study_g <- data_clean %>%
+  ggplot(aes(Hours_Studied, Exam_Score)) +
+  geom_point()+geom_jitter(width = 0.2, alpha = 0.1)
+study_t <- data_clean %>% group_by(Hours_Studied, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Attendance
+attend_g <- data_clean %>%
+  ggplot(aes(Attendance, Exam_Score)) +
+  geom_point()+ geom_jitter(width = 0.2, alpha = 0.1)
+attend_t <- data_clean %>% 
+  group_by(Attendance, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Previous Scores
+prev_g <- data_clean %>%
+  ggplot(aes(Previous_Scores, Exam_Score)) +
+  geom_point()+ geom_jitter(width = 0.2, alpha = 0.1)
+prev_t <- data_clean %>% 
+  group_by(Previous_Scores, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Extra Curricular Activities
+xtra_g <- data_clean %>%
+  ggplot(aes(Extracurricular_Activities, Exam_Score)) + 
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+xtra_t <- data_clean %>% group_by(Extracurricular_Activities, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#sleep hours
+sleep_g <- data_clean %>%
+  ggplot(aes(Sleep_Hours, Exam_Score, group = Sleep_Hours)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+sleep_t <- data_clean %>% group_by(Sleep_Hours, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Motivation Level
+mot_g <- data_clean %>%
+  ggplot(aes(Motivation_Level, Exam_Score)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+mot_t <- data_clean %>% group_by(Motivation_Level, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Physical Activity
+phys_g <- data_clean %>%
+  ggplot(aes(Physical_Activity, Exam_Score, group= Physical_Activity)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+phys_t <- data_clean %>% group_by(Physical_Activity, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Learning Disability
+dis_g <- data_clean %>%
+  ggplot(aes(Learning_Disabilities, Exam_Score)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+dis_t <- data_clean %>% group_by(Learning_Disabilities, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Gender
+gender_g <- data_clean %>%
+  ggplot(aes(Gender, Exam_Score)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+gender_t <- data_clean %>% group_by(Gender, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Home environment:
+#Parental_Involvement
+parent_g <- data_clean %>%
+  ggplot(aes(Parental_Involvement, Exam_Score)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+parent_t <- data_clean %>% group_by(Parental_Involvement, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Parental_Involvement, values_from = proportion)
+
+#Access to Resources
+reso_g <- data_clean %>%
+  ggplot(aes(Access_to_Resources, Exam_Score)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+reso_t <- data_clean %>% group_by(Access_to_Resources, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Access_to_Resources, values_from = proportion)
+
+#Internet_Access
+int_g <- data_clean %>%
+  ggplot(aes(Internet_Access, Exam_Score)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+int_t <- data_clean %>% group_by(Internet_Access, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Tutoring Sessions
+tut_g <- data_clean %>%
+  ggplot(aes(Tutoring_Sessions, Exam_Score, group = Tutoring_Sessions)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+tut_t <- data_clean %>% group_by(Tutoring_Sessions, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Family Income
+inc_g <- data_clean %>%
+  ggplot(aes(Family_Income, Exam_Score)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+inc_t <- data_clean %>% group_by(Family_Income, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#School Environment:
+#school type
+school_g <- data_clean %>%
+  ggplot(aes(School_Type, Exam_Score)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+school_t <- data_clean %>% group_by(School_Type, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+
+#Peer Influence
+peer_g <- data_clean %>%
+  ggplot(aes(Peer_Influence, Exam_Score)) +
+  stat_boxplot(geom = "errorbar", width = 0.15) +
+  geom_boxplot()
+peer_t <- data_clean %>% group_by(Peer_Influence, Pass) %>% 
+  tally() %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = Pass, values_from = proportion)
+```
+```{r data-explore-6, fig.cap="Student Behaviors and Attitudes"}
+grid.arrange(study_g, attend_g, prev_g, xtra_g, sleep_g, mot_g, phys_g, dis_g, gender_g, ncol=3)
+```
+```{r data-explore-7, fig.cap="Student Home Environment"}
+grid.arrange(parent_g, reso_g, int_g, tut_g, inc_g, ncol = 3)
+```
+```{r data-explore-8, fig.cap="Student School Environment"}
+grid.arrange(school_g, peer_g, ncol = 2)
+```
+Some features show obvious correlation such as Hours_Studied and Attendance; studying more hours and attending class a higher percentage of time positively impacts exam score. Previous score shows a very slight positive correlation as well. The other variables are not as clear as the error bars on the box plots overlap, indicating the differences may not be statistically significant and further analysis must be performed to understand the data. Viewing the proportion table for parent involvement shows the proportion of students that have low parental involvement and fail is 30.5%, which is approximately 8.5% higher than the overall failure rate. Students that have high parental involvement fail 14.8% of the time, which is approximately 7% lower than the overall rate. Failure rate for medium parental involvement is about the same as the overall rate. Through comparing proportions we see parental involvement is a significant feature and having low or high parental involvement will impact student performance. 
+```{r data-explore-9}
+parent_t %>% kable(caption="Parent Involvement proportion")
+```
+Some features appear to not have a statistically significant impact on student performance. For example, the number of hours per night a student sleeps all have pass/fail proportions that are similar to the overall rate.
+```{r data-explore-10}
+sleep_t %>% kable(caption = "Sleep Hours proportion")
+```
+In addition to sleep hours, school type and gender appear to not be statistically relevant based on their graphs and proportion tables. All features were used in model development; graphs, and proportion tables for all 16 features are available in the code.
+
+# Methods
+Exam score is predicted using regression models; these model's performance is evaluated using RMSE. RMSE is a measure of the difference between values predicted by a model and actual values observed in the dataset. The equation for RMSE is defined as: $$RMSE = \sqrt{\frac{1}{N} \sum(\hat{y} - y)^2 }$$ with *y* representing the actual score, $\hat{y}$ representing the prediction, and *N* representing the number of observations, with the sum occurring over all the observations. RMSE can be interpreted similarly to standard deviation; an RMSE of 1 indicates that the error in the model is equivalent to +/- 1 point in exam score. Pass is predicted using classification models; these model's performances are evaluated using accuracy.  Accuracy is defined as the overall proportion that is predicted correctly (Irizzary, 2019). Accuracy is calculated using either the mean() function in base R or confusionMatrix() function from the caret package.  
+
+## Train and Test sets
+In order to avoid over training the model the cleaned dataset is split into a train set and a test set, with 20% of the cleaned data in the test set. The train set is used to develop the model, which is then tested on the test set to determine model performance. When predicting "Exam_Score" using regression models, the "Pass" variable is removed as it is based on "Exam_Score" and would result in grave overtraining. Similarly, the "Exam_Score" variable is removed when predicting "Pass" using classification models.
+```{r method-1, echo=TRUE}
+#create test and train sets
+set.seed(40, sample.kind = "Rounding") #if using R 3.6 or later
+index <- createDataPartition(y = data_clean$Exam_Score, times = 1, p = 0.2, list = FALSE)
+train <- data_clean[-index, ] %>% select(-Pass) # remove Pass for reg models
+test <- data_clean[index,] %>% select(-Pass) # remove Pass for reg models
+train_pass <- data_clean[-index, ] %>% select(-Exam_Score) # remove Exam_Score for class models
+test_pass <- data_clean[index,] %>% select(-Exam_Score) # remove Exam_Score for class models
+```
+An even split can be confirmed using either the mean of "Exam_Score" or "Pass" = 1.
+```{r method-2, fig.cap="Mean Exam_Score"}
+#confirm even split of data
+tibble("Train" = mean(train$Exam_Score), "Test" = mean(test$Exam_Score)) %>% kable(caption="Exam_Score mean")
+```
+
+## Models
+The caret package (short for **C**lassification **A**nd **RE**gression **T**raining) (Kuhn 2017) is used extensively in model development. This package includes all functionality needed to create and develop a predictive model and streamlines syntax across a variety of models. The models **glm**, **knn**, and **rf** are used for this analysis because they can be used for continuous and categorical input and output in both both regression and classification models; to find the best model I compare the performances of regression and classification techniques. GLM (generalized linear model) is used because it finds a generalized linear fit and can accept variables and output features that have a variety of distributions. KNN (K nearest neighbor) is used to explore the impact of neighboring datapoints; it also allows for cross validation. The train control set-up of 5-fold cross validation with 2 repeats is used due to size of the dataset and processing limitations of my system. This is held constant for knn and rf models, regression and classification. RF (random forest) is used because it averages the results of many decision trees to make predictions. The tuning parameter mtry, which determines the number of randomly selected variables considered at each split when growing a decision tree, is tuned when running this model using a 3 step process. First the model is run using the default values of 2, 11, and 21 for mtry. The best default mtry value is identified, and the second step consists of running the model with a range of values for mtry that are centered around the value selected in step 1. Finally, the model is run one last time with the best value of mtry as selected in the tuning step. 
+```{r method-3, echo=TRUE, message=FALSE, warning=FALSE}
+################
+# Regression
+################
+#GLM
+set.seed(41, sample.kind = "Rounding")#if using R 3.6 or later
+train_glm <- train(Exam_Score~., data = train, method = "glm")
+preds_glm <- predict(train_glm, test)
+rmse_glm <- RMSE(preds_glm, test$Exam_Score)
+results <- tibble(Model="GLM", RMSE = rmse_glm)
+
+#KNN with cross validation
+tc <- trainControl("cv", number=5, repeats = 2)
+set.seed(42, sample.kind = "Rounding")#if using R 3.6 or later
+train_knn <- train(Exam_Score~., 
+                   data = train, 
+                   method = "knn", 
+                   trControl = tc,
+                   preProcess = c("center", "scale"),
+                   tuneLength = 15) # start with default k=5 and increment by 2 15 times
+preds_knn <- predict(train_knn, test)
+rmse_knn <- RMSE(preds_knn, test$Exam_Score)
+results <- bind_rows(results, 
+                          data.frame(Model="KNN", RMSE = rmse_knn))
+```
+
+```{r method-4, echo=TRUE, message=FALSE, warning=FALSE}
+#random forest with cross validation and hyperparameter tuning
+#this code can take some time depending on processing power
+#default
+set.seed(43, sample.kind = "Rounding")#if using R 3.6 or later
+rf_default <- train(Exam_Score~., 
+                    data=train,
+                    method = "rf",
+                    trControl=tc) ###samples mtry = (2,11,12)
+```
+
+```{r method-5, echo=TRUE, message=FALSE, warning=FALSE}
+#tune mtry
+#this code can take some time depending on processing power
+tg <- expand.grid(.mtry=c(6:13)) 
+set.seed(44, sample.kind = "Rounding")#if using R 3.6 or later
+rf_mtry <- train(Exam_Score~.,
+                 data=train,
+                 method = "rf",
+                 trControl=tc,
+                 tuneGrid=tg)
+best_mtry <- rf_mtry$bestTune$mtry
+```
+
+```{r method-6, echo=TRUE, message=FALSE, warning=FALSE}
+#final rf model using best_mtry from previous tuning
+#this code can take some time depending on processing power
+set.seed(45, sample.kind = "Rounding")#if using R 3.6 or later
+train_rf <- train(Exam_Score~.,
+                    data=train,
+                    method = "rf",
+                    trControl=tc,
+                    tuneGrid= expand.grid(.mtry=best_mtry))
+preds_rf <- predict(train_rf, test)
+rmse_rf <- RMSE(preds_rf, test$Exam_Score)
+results <- bind_rows(results, 
+                     data.frame(Model="Random Forest", RMSE = rmse_rf))
+
+```
+
+```{r method-7, echo=TRUE, message=FALSE, warning=FALSE}
+######################
+# Classification
+######################
+#Logistic GLM
+set.seed(46, sample.kind = "Rounding")
+train_class_glm <- train(Pass ~ .,
+                        data = train_pass,
+                        method = "glm")
+preds_class_glm <- predict(train_class_glm, test_pass)
+acc_glm <- mean(preds_class_glm == test_pass$Pass)
+results_acc <- tibble(Model="GLM", Accuracy = acc_glm)
+
+#KNN with cross validation
+set.seed(47, sample.kind = "Rounding")
+train_class_knn <- train(Pass~., 
+                       data = train_pass, 
+                       method = "knn", 
+                       trControl = tc,
+                       preProcess = c("center", "scale"),
+                       tuneLength = 15)
+preds_class_knn <- predict(train_class_knn, test_pass)
+acc_knn <- confusionMatrix(preds_class_knn, test_pass$Pass)$overall[["Accuracy"]]
+results_acc <- bind_rows(results_acc, 
+                          data.frame(Model="KNN", Accuracy = acc_knn))
+```
+
+```{r method-8, echo=TRUE, message=FALSE, warning=FALSE}
+#random forest with cross validation and hyperparameter tuning
+#default
+set.seed(48, sample.kind = "Rounding")#if using R 3.6 or later
+rf_class_default <- train(Pass~., 
+                    data=train_pass,
+                    method = "rf",
+                    trControl=tc) ###samples mtry = (2,11,12)
+```
+
+```{r method-9, echo=TRUE, message=FALSE, warning=FALSE}
+#tune mtry
+# tg same as reg,  #+/- 5 from previous model best mtry 11
+set.seed(49, sample.kind = "Rounding")#if using R 3.6 or later
+rf_class_mtry <- train(Pass~.,
+                 data=train_pass,
+                 method = "rf",
+                 trControl=tc,
+                 tuneGrid=tg)
+best_mtry <- rf_class_mtry$bestTune$mtry
+```
+
+```{r method-10, echo=TRUE, message=FALSE, warning=FALSE}
+#final rf model using best_mtry from previous tuning
+set.seed(50, sample.kind = "Rounding")#if using R 3.6 or later
+train_class_rf <- train(Pass~.,
+                  data=train_pass,
+                  method = "rf",
+                  trControl=tc,
+                  tuneGrid= expand.grid(.mtry=best_mtry))
+preds_class_rf <- predict(train_class_rf, test)
+acc_rf <- confusionMatrix(preds_class_rf, test_pass$Pass)$overall[["Accuracy"]]
+results_acc <- bind_rows(results_acc, 
+                         data.frame(Model="Random Forest", Accuracy = acc_rf))
+
+```
+
+# Results
+The results for the regression models predicting the outcome "Exam_Score" are below. The best regression model with the lowest RMSE is **glm**.
+```{r results-1, fig.cap="Important variables used in regression models"}
+results %>% kable(caption = "Regression results")
+```
+The results for the classification models predicting the outcome "Pass" are below. The best classification model with the highest accuracy is **glm**.
+```{r results-2, fig.cap="Important variables used in classification models"}
+results_acc %>% kable(caption = "Classification results")
+```
+This project seeks to accurately identify the students that will fail so they can receive intervention and support in hopes of improving their outcome. Therefore the overall best model maximizes the true positives, or the number of students that are predicted to receive a failing score and actually fail, and minimizes the false negatives, or the number of students that are predicted to receive a passing score but actually fail. 
+
+```{r results-3, fig.cap="GLM Regression results plot"}
+compare_glm <- data.frame(Exam_Score = test$Exam_Score, Preds = preds_glm) # create dataframe
+compare_glm %>% ggplot(aes(Exam_Score, Preds)) + geom_point() + #plot test exam score vs predicted score
+  geom_jitter(alpha = 0.5) + 
+  geom_vline(aes(xintercept = 65), color = "red", linetype = "dashed") +
+  geom_hline(aes(yintercept = 65), color = "red", linetype = "dashed") +
+  ylab("Prediction")
+glm_falseneg <- compare_glm %>% filter(Preds >= 65 & Exam_Score < 65) %>% nrow()
+```
+In the graph above, the datapoints in the upper left quadrant represent false negatives from the **glm** regression model. These datapoints represent students that need help (they will receive failing exam scores) but aren't identified as needing help (they are predicted to pass). There are `r glm_falseneg` students at risk in this model.
+By viewing the confusion matrix of the glm classification model, we see the number of students predicted to pass but actually failed is `r confusionMatrix(preds_class_glm, test_pass$Pass)$table[2,1]`.
+```{r results-4, fig.cap="Confusion Matrix and Statistics for GLM classification model"}
+confusionMatrix(preds_class_glm, test_pass$Pass)
+```
+The best model is therefore identified as the **glm** regression model as it minimizes the overall false negatives. This is confirmed by reviewing each model's sensitivity. GLM regression has the highest sensitivity.
+```{r results-5, echo=TRUE}
+glm_truepos <- compare_glm %>% filter(Preds < 65 & Exam_Score < 65) %>% nrow()
+glm_sens <- glm_truepos/(glm_truepos+glm_falseneg)
+glm_class_sens <- confusionMatrix(preds_class_glm, test_pass$Pass)$byClass[c("Sensitivity")] 
+
+tibble("GLM Regression" = glm_sens, 
+       "GLM Classification" = glm_class_sens) %>% kable(caption="Model Sensitivity")
+```
+Finally, we review the important variables used in the GLM regression model. Teachers, administrators, and legislators can use this information to create programs that address shortcomings in these areas. Attendance has the largest impact followed by hours studied; one idea to improve student success is to incentivize students to attend class and create dedicated time for studying during the school day. 
+
+```{r results-6, echo=FALSE, fig.cap= "Important variables used in GLM regression"}
+plot(varImp(train_glm), top=5, xlim=c(0,100), main = "GLM")
+
+```
+
+# Conclusions
+For this project I used various machine learning models and techniques to predict academic failure. The versatility of the caret package allowed exploration of continuous models to predict a student's exam score and categorical models to predict whether a student would pass or fail. The best model is **glm** regression because it has the best sensitivity and minimizes the number of students that are predicted to receive a passing score but actually fail. The model can be used to identify students that need support. It can also be used to understand the important variables that influence success, and programs can be created with the goal of improving student outcomes by removing personal, home, and school barriers.  
+A major limitation of this work is that it is completed on a synthetic dataset and cannot be applied to real world scenarios. In the future I intend to gather a dataset representing Oregon schools, run a similar analysis, and share the results with leaders of the Tigard-Tualatin School District and the Oregon Department of Education. For this future work I will use a more robust cross validation set-up and hypertune additional parameters for the models. Additionally I would like to better understand the interactions between predictors and plan to implement matrix factorization and principle component analysis in order to explore different machine learning techniques and to identify patterns in the data.
+
+\newpage
+# References
+
+Baker, R.S. (2023). _Big Data and Education._ EdX. [https://learning.edx.org/course/course-v1:PennX+BDE1x+1T2021/home](https://learning.edx.org/course/course-v1:PennX+BDE1x+1T2021/home).
+
+Irizarry, R.A. (2019). _Introduction to Data Science Data Analysis and Prediction Algorithms with R._  [https://rafalab.dfci.harvard.edu/dsbook/](https://rafalab.dfci.harvard.edu/dsbook/). 
+
+Kuhn, Max. (2019). _The caret Package._ [https://topepo.github.io/caret/](https://topepo.github.io/caret/).
+
+Lainguyn123. Student Performance Factors. Retrieved November 11, 2024 from [https://www.kaggle.com/datasets/lainguyn123/student-performance-factors/data](https://www.kaggle.com/datasets/lainguyn123/student-performance-factors/data).
+
